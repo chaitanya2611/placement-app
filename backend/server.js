@@ -13,6 +13,7 @@ import questionRoutes from "./routes/questionRoutes.js";
 import resourceRoutes from "./routes/resourceRoutes.js";
 import quizRoutes from "./routes/quizRoutes.js";
 import meetingRoutes from "./routes/meetingRoutes.js";
+import codingRoutes from "./routes/codingRoutes.js";
 
 import User from "./models/User.js";
 import Group from "./models/Group.js";
@@ -68,6 +69,7 @@ app.use("/api/questions", questionRoutes);
 app.use("/api/resources", resourceRoutes);
 app.use("/api/quizzes", quizRoutes);
 app.use("/api/meetings", meetingRoutes);
+app.use("/api/coding", codingRoutes);
 app.use("/api/upload", uploadRoutes);
 
 io.use(async (socket, next) => {

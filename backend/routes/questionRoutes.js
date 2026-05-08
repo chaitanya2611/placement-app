@@ -63,6 +63,7 @@ router.post(
   async (req, res) => {
     try {
       const { questionText, correctOption, explanation } = req.body;
+      const topic = req.body.topic?.trim() || "General";
 
       let options = req.body.options;
 
@@ -93,6 +94,7 @@ router.post(
       const question = await Question.create({
         group: req.params.groupId,
         createdBy: req.user._id,
+        topic,
         questionText,
         questionImageUrl: uploadResult?.secure_url || "",
         questionImagePublicId: uploadResult?.public_id || "",
@@ -123,7 +125,13 @@ router.get("/:groupId", authMiddleware, async (req, res) => {
         .json({ message: "Only group members can view MCQs" });
     }
 
-    const questions = await Question.find({ group: req.params.groupId })
+    const query = { group: req.params.groupId };
+
+    if (req.query.topic && req.query.topic !== "All") {
+      query.topic = req.query.topic;
+    }
+
+    const questions = await Question.find(query)
       .populate("createdBy", "name email")
       .sort({ createdAt: -1 });
 
@@ -149,6 +157,26 @@ router.get("/:groupId", authMiddleware, async (req, res) => {
     res.json(questionsWithAttempts);
   } catch (error) {
     res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.get("/topics/:groupId", authMiddleware, async (req, res) => {
+  try {
+    const group = await isGroupMember(req.params.groupId, req.user._id);
+
+    if (!group) {
+      return res
+        .status(403)
+        .json({ message: "Only group members can view topics" });
+    }
+
+    const topics = await Question.distinct("topic", {
+      group: req.params.groupId,
+    });
+
+    res.json(topics.filter(Boolean).sort());
+  } catch (error) {
+    res.status(500).json({ message: "Failed to fetch topics" });
   }
 });
 

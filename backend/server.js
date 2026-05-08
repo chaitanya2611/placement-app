@@ -23,8 +23,8 @@ const server = http.createServer(app);
 
 const allowedOrigins = [
   "http://localhost:3000",
-  "https://placement-app-frontend-2a1r.vercel.app",
-];
+  process.env.CLIENT_URL,
+].filter(Boolean);
 
 const corsOptions = {
   origin: (origin, callback) => {
@@ -46,6 +46,14 @@ app.set("io", io);
 
 app.use(cors(corsOptions));
 app.use(express.json());
+
+app.get("/api/health", (req, res) => {
+  res.json({
+    success: true,
+    message: "Placement Prep API is running",
+    timestamp: new Date().toISOString(),
+  });
+});
 
 app.use("/api/auth", authRoutes);
 app.use("/api/groups", groupRoutes);
@@ -93,8 +101,8 @@ io.on("connection", (socket) => {
     socket.join(groupId);
   });
 
-  socket.on("sendMessage", async ({ groupId, text, attachment }) => {
-    if (!text?.trim() && !attachment) return;
+  socket.on("sendMessage", async ({ groupId, text }) => {
+    if (!text?.trim()) return;
 
     const group = await Group.findById(groupId);
     if (!group) return;
@@ -108,8 +116,8 @@ io.on("connection", (socket) => {
     const message = await Message.create({
       group: groupId,
       sender: socket.user._id,
-      text: text || "",
-      attachment: attachment || null,
+      text: text.trim(),
+      messageType: "text",
     });
 
     const populatedMessage = await Message.findById(message._id)
@@ -121,6 +129,13 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => {
     console.log("User disconnected:", socket.user.name);
+  });
+});
+
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: "API route not found",
   });
 });
 

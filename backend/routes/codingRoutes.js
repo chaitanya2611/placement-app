@@ -6,8 +6,15 @@ import authMiddleware from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
-const PISTON_API_URL = process.env.PISTON_API_URL || "https://emkc.org/api/v2/piston/execute";
+const PISTON_API_URL = process.env.PISTON_API_URL || "";
 const PYTHON_VERSION = process.env.PISTON_PYTHON_VERSION || "3.10.0";
+const JUDGE0_API_URL = process.env.JUDGE0_API_URL || "";
+const JUDGE0_API_KEY = process.env.JUDGE0_API_KEY || "";
+const JUDGE0_API_HOST = process.env.JUDGE0_API_HOST || "";
+const JUDGE0_PYTHON_LANGUAGE_ID = Number(process.env.JUDGE0_PYTHON_LANGUAGE_ID || 71);
+const CODE_EXECUTION_PROVIDER =
+  process.env.CODE_EXECUTION_PROVIDER ||
+  (JUDGE0_API_URL ? "judge0" : PISTON_API_URL ? "piston" : "none");
 
 const isGroupMember = async (groupId, userId) => {
   const group = await Group.findById(groupId);
@@ -26,6 +33,15 @@ const ensureCodingEnabled = (group) => {
 
 const normalizeOutput = (value = "") => {
   return String(value).replace(/\r\n/g, "\n").trim();
+};
+
+const ensureExecutionProvider = () => {
+  if (CODE_EXECUTION_PROVIDER === "piston" && PISTON_API_URL) return;
+  if (CODE_EXECUTION_PROVIDER === "judge0" && JUDGE0_API_URL) return;
+
+  throw new Error(
+    "Code execution provider is not configured. Set CODE_EXECUTION_PROVIDER=judge0 with JUDGE0_API_URL, or set CODE_EXECUTION_PROVIDER=piston with a self-hosted PISTON_API_URL.",
+  );
 };
 
 const runPythonWithPiston = async (code, stdin = "") => {
@@ -72,6 +88,64 @@ const runPythonWithPiston = async (code, stdin = "") => {
   }
 };
 
+const runPythonWithJudge0 = async (code, stdin = "") => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000);
+
+  try {
+    const baseUrl = JUDGE0_API_URL.replace(/\/$/, "");
+    const headers = {
+      "Content-Type": "application/json",
+    };
+
+    if (JUDGE0_API_KEY) {
+      headers["X-RapidAPI-Key"] = JUDGE0_API_KEY;
+    }
+
+    if (JUDGE0_API_HOST) {
+      headers["X-RapidAPI-Host"] = JUDGE0_API_HOST;
+    }
+
+    const response = await fetch(`${baseUrl}/submissions?base64_encoded=false&wait=true`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        source_code: code,
+        language_id: JUDGE0_PYTHON_LANGUAGE_ID,
+        stdin,
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text || "Judge0 execution failed");
+    }
+
+    const data = await response.json();
+
+    return {
+      stdout: data.stdout || "",
+      stderr: data.stderr || data.compile_output || "",
+      output: data.stdout || data.stderr || data.compile_output || "",
+      code: data.status?.id === 3 ? 0 : data.status?.id || 1,
+      signal: null,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const runPythonCode = async (code, stdin = "") => {
+  ensureExecutionProvider();
+
+  if (CODE_EXECUTION_PROVIDER === "judge0") {
+    return runPythonWithJudge0(code, stdin);
+  }
+
+  return runPythonWithPiston(code, stdin);
+};
+
 const evaluateCodeAgainstTests = async (code, testCases) => {
   const results = [];
   let passedTests = 0;
@@ -79,7 +153,7 @@ const evaluateCodeAgainstTests = async (code, testCases) => {
 
   for (let index = 0; index < testCases.length; index += 1) {
     const testCase = testCases[index];
-    const execution = await runPythonWithPiston(code, testCase.input || "");
+    const execution = await runPythonCode(code, testCase.input || "");
     const receivedOutput = execution.stdout || "";
     const expectedOutput = testCase.expectedOutput || "";
     const passed =

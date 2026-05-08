@@ -1,8 +1,68 @@
 import express from "express";
 import Group from "../models/Group.js";
+import Question from "../models/Question.js";
+import Resource from "../models/Resource.js";
+import Message from "../models/Message.js";
 import authMiddleware from "../middleware/authMiddleware.js";
 
 const router = express.Router();
+
+const attachGroupStats = async (groups, userId) => {
+  return Promise.all(
+    groups.map(async (groupDoc) => {
+      const group = groupDoc.toObject();
+
+      const [mcqCount, resourceCount, lastMessage, lastQuestion, lastResource] =
+        await Promise.all([
+          Question.countDocuments({ group: group._id }),
+          Resource.countDocuments({ group: group._id }),
+          Message.findOne({ group: group._id }).sort({ createdAt: -1 }),
+          Question.findOne({ group: group._id }).sort({ createdAt: -1 }),
+          Resource.findOne({ group: group._id }).sort({ createdAt: -1 }),
+        ]);
+
+      const pendingRequestsCount =
+        group.creator?._id?.toString() === userId.toString()
+          ? group.joinRequests.filter((request) => request.status === "pending").length
+          : 0;
+
+      const activityDates = [
+        group.updatedAt,
+        lastMessage?.createdAt,
+        lastQuestion?.createdAt,
+        lastResource?.createdAt,
+      ].filter(Boolean);
+
+      const lastActivityAt = activityDates.length
+        ? new Date(Math.max(...activityDates.map((date) => new Date(date).getTime())))
+        : group.createdAt;
+
+      let lastActivityText = "Group created";
+
+      if (lastMessage && new Date(lastMessage.createdAt).getTime() === lastActivityAt.getTime()) {
+        lastActivityText = lastMessage.text
+          ? `Last message: ${lastMessage.text.slice(0, 60)}`
+          : "Image shared in chat";
+      } else if (lastQuestion && new Date(lastQuestion.createdAt).getTime() === lastActivityAt.getTime()) {
+        lastActivityText = `MCQ added: ${lastQuestion.topic || "General"}`;
+      } else if (lastResource && new Date(lastResource.createdAt).getTime() === lastActivityAt.getTime()) {
+        lastActivityText = `Resource added: ${lastResource.title}`;
+      }
+
+      return {
+        ...group,
+        stats: {
+          membersCount: group.members?.length || 0,
+          mcqCount,
+          resourceCount,
+          pendingRequestsCount,
+          lastActivityAt,
+          lastActivityText,
+        },
+      };
+    }),
+  );
+};
 
 /* CREATE GROUP */
 router.post("/", authMiddleware, async (req, res) => {
@@ -40,7 +100,9 @@ router.get("/my-groups", authMiddleware, async (req, res) => {
       .populate("joinRequests.user", "name email")
       .sort({ createdAt: -1 });
 
-    res.json(groups);
+    const groupsWithStats = await attachGroupStats(groups, req.user._id);
+
+    res.json(groupsWithStats);
   } catch (error) {
     res.status(500).json({ message: "Server error" });
   }

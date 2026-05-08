@@ -6,12 +6,13 @@ import Resource from "../models/Resource.js";
 
 const router = express.Router();
 
+const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const storage = multer.memoryStorage();
 
 const upload = multer({
   storage,
   limits: {
-    fileSize: 10 * 1024 * 1024,
+    fileSize: MAX_FILE_SIZE,
   },
 });
 

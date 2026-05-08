@@ -139,6 +139,33 @@ router.get("/single/:quizId", authMiddleware, async (req, res) => {
   }
 });
 
+router.delete("/single/:quizId", authMiddleware, async (req, res) => {
+  try {
+    const quiz = await Quiz.findById(req.params.quizId);
+
+    if (!quiz) {
+      return res.status(404).json({ message: "Quiz not found" });
+    }
+
+    const group = await isGroupMember(quiz.group, req.user._id);
+
+    if (!group) {
+      return res.status(403).json({ message: "Only group members can delete quizzes" });
+    }
+
+    if (quiz.createdBy.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "Only quiz creator can delete this quiz" });
+    }
+
+    await QuizAttempt.deleteMany({ quiz: quiz._id });
+    await Quiz.findByIdAndDelete(quiz._id);
+
+    res.json({ message: "Quiz deleted successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to delete quiz" });
+  }
+});
+
 router.post("/:quizId/submit", authMiddleware, async (req, res) => {
   try {
     const quiz = await Quiz.findById(req.params.quizId);

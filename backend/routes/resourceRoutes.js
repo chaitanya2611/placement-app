@@ -1,10 +1,8 @@
 import express from "express";
 import multer from "multer";
-import streamifier from "streamifier";
 import authMiddleware from "../middleware/authMiddleware.js";
 import Group from "../models/Group.js";
 import Resource from "../models/Resource.js";
-import cloudinary from "../utils/cloudinary.js";
 
 const router = express.Router();
 
@@ -17,22 +15,98 @@ const upload = multer({
   },
 });
 
-const uploadToCloudinary = (fileBuffer, originalname) => {
-  return new Promise((resolve, reject) => {
-    const stream = cloudinary.uploader.upload_stream(
-      {
-        folder: "placement-app/resources",
-        resource_type: "auto",
-        public_id: `${Date.now()}-${originalname}`,
-      },
-      (error, result) => {
-        if (result) resolve(result);
-        else reject(error);
-      },
-    );
+const sanitizeFileName = (fileName) => {
+  return fileName
+    .replace(/[^a-zA-Z0-9._-]/g, "-")
+    .replace(/-+/g, "-")
+    .toLowerCase();
+};
 
-    streamifier.createReadStream(fileBuffer).pipe(stream);
-  });
+const uploadToGitHub = async ({ fileBuffer, originalname, groupId }) => {
+  const owner = process.env.GITHUB_OWNER;
+  const repo = process.env.GITHUB_REPO;
+  const branch = process.env.GITHUB_BRANCH || "main";
+  const token = process.env.GITHUB_TOKEN;
+  const folder = process.env.GITHUB_RESOURCE_FOLDER || "uploaded-resources";
+
+  if (!owner || !repo || !token) {
+    throw new Error("GitHub storage environment variables are missing");
+  }
+
+  const safeName = sanitizeFileName(originalname);
+  const path = `${folder}/${groupId}/${Date.now()}-${safeName}`;
+  const content = fileBuffer.toString("base64");
+
+  const response = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/contents/${path}`,
+    {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      body: JSON.stringify({
+        message: `Upload resource ${safeName}`,
+        content,
+        branch,
+      }),
+    },
+  );
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.message || "GitHub upload failed");
+  }
+
+  return {
+    downloadUrl: data.content.download_url,
+    path,
+  };
+};
+
+const deleteFromGitHub = async (filePath) => {
+  const owner = process.env.GITHUB_OWNER;
+  const repo = process.env.GITHUB_REPO;
+  const branch = process.env.GITHUB_BRANCH || "main";
+  const token = process.env.GITHUB_TOKEN;
+
+  if (!owner || !repo || !token || !filePath) return;
+
+  const getResponse = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}?ref=${branch}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    },
+  );
+
+  if (!getResponse.ok) return;
+
+  const fileData = await getResponse.json();
+
+  await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}`,
+    {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      body: JSON.stringify({
+        message: `Delete resource ${filePath}`,
+        sha: fileData.sha,
+        branch,
+      }),
+    },
+  );
 };
 
 const checkMember = async (groupId, userId) => {
@@ -93,10 +167,11 @@ router.post(
         return res.status(400).json({ message: "Title is required" });
       }
 
-      const uploadResult = await uploadToCloudinary(
-        req.file.buffer,
-        req.file.originalname,
-      );
+      const uploadResult = await uploadToGitHub({
+        fileBuffer: req.file.buffer,
+        originalname: req.file.originalname,
+        groupId: req.params.groupId,
+      });
 
       const resource = await Resource.create({
         group: req.params.groupId,
@@ -104,8 +179,8 @@ router.post(
         title,
         description,
         resourceType: "file",
-        fileUrl: uploadResult.secure_url,
-        filePublicId: uploadResult.public_id,
+        fileUrl: uploadResult.downloadUrl,
+        filePublicId: uploadResult.path,
         fileName: req.file.originalname,
         fileMimeType: req.file.mimetype,
         fileSize: req.file.size,
@@ -182,9 +257,7 @@ router.delete("/:resourceId", authMiddleware, async (req, res) => {
     }
 
     if (resource.filePublicId) {
-      await cloudinary.uploader.destroy(resource.filePublicId, {
-        resource_type: "raw",
-      });
+      await deleteFromGitHub(resource.filePublicId);
     }
 
     await Resource.findByIdAndDelete(resource._id);

@@ -19,6 +19,11 @@ const groupSchema = new mongoose.Schema(
       required: true,
     },
 
+    codingEnabled: {
+      type: Boolean,
+      default: false,
+    },
+
     members: [
       {
         type: mongoose.Schema.Types.ObjectId,

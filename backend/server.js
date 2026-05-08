@@ -10,6 +10,7 @@ import authRoutes from "./routes/authRoutes.js";
 import groupRoutes from "./routes/groupRoutes.js";
 import messageRoutes from "./routes/messageRoutes.js";
 import questionRoutes from "./routes/questionRoutes.js";
+import resourceRoutes from "./routes/resourceRoutes.js";
 
 import User from "./models/User.js";
 import Group from "./models/Group.js";
@@ -59,6 +60,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/groups", groupRoutes);
 app.use("/api/messages", messageRoutes);
 app.use("/api/questions", questionRoutes);
+app.use("/api/resources", resourceRoutes);
 app.use("/api/upload", uploadRoutes);
 
 io.use(async (socket, next) => {

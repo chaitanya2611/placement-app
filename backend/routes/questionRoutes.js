@@ -2,6 +2,7 @@ import express from "express";
 import multer from "multer";
 import streamifier from "streamifier";
 import Question from "../models/Question.js";
+import QuestionAttempt from "../models/QuestionAttempt.js";
 import Group from "../models/Group.js";
 import authMiddleware from "../middleware/authMiddleware.js";
 import cloudinary from "../utils/cloudinary.js";
@@ -55,7 +56,6 @@ const isGroupMember = async (groupId, userId) => {
   return member ? group : null;
 };
 
-// Any group member can add MCQ
 router.post(
   "/:groupId",
   authMiddleware,
@@ -113,7 +113,6 @@ router.post(
   },
 );
 
-// Get MCQs
 router.get("/:groupId", authMiddleware, async (req, res) => {
   try {
     const group = await isGroupMember(req.params.groupId, req.user._id);
@@ -128,9 +127,133 @@ router.get("/:groupId", authMiddleware, async (req, res) => {
       .populate("createdBy", "name email")
       .sort({ createdAt: -1 });
 
-    res.json(questions);
+    const attempts = await QuestionAttempt.find({
+      group: req.params.groupId,
+      user: req.user._id,
+    });
+
+    const attemptMap = {};
+
+    attempts.forEach((attempt) => {
+      attemptMap[attempt.question.toString()] = {
+        selectedOption: attempt.selectedOption,
+        isCorrect: attempt.isCorrect,
+      };
+    });
+
+    const questionsWithAttempts = questions.map((question) => ({
+      ...question.toObject(),
+      userAttempt: attemptMap[question._id.toString()] || null,
+    }));
+
+    res.json(questionsWithAttempts);
   } catch (error) {
     res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.post("/attempt/:questionId", authMiddleware, async (req, res) => {
+  try {
+    const { selectedOption } = req.body;
+
+    const question = await Question.findById(req.params.questionId);
+
+    if (!question) {
+      return res.status(404).json({ message: "Question not found" });
+    }
+
+    const group = await isGroupMember(question.group, req.user._id);
+
+    if (!group) {
+      return res
+        .status(403)
+        .json({ message: "Only group members can attempt MCQs" });
+    }
+
+    const existingAttempt = await QuestionAttempt.findOne({
+      question: question._id,
+      user: req.user._id,
+    });
+
+    if (existingAttempt) {
+      return res.status(400).json({
+        message: "You already attempted this question",
+      });
+    }
+
+    const isCorrect = Number(selectedOption) === question.correctOption;
+
+    const attempt = await QuestionAttempt.create({
+      question: question._id,
+      group: question.group,
+      user: req.user._id,
+      selectedOption: Number(selectedOption),
+      isCorrect,
+    });
+
+    const totalAttempts = await QuestionAttempt.countDocuments({
+      group: question.group,
+      user: req.user._id,
+    });
+
+    const correctAttempts = await QuestionAttempt.countDocuments({
+      group: question.group,
+      user: req.user._id,
+      isCorrect: true,
+    });
+
+    res.json({
+      message: isCorrect ? "Correct answer" : "Wrong answer",
+      isCorrect,
+      correctOption: question.correctOption,
+      explanation: question.explanation,
+      attempt,
+      stats: {
+        totalAttempts,
+        correctAttempts,
+        scorePercentage:
+          totalAttempts > 0
+            ? Math.round((correctAttempts / totalAttempts) * 100)
+            : 0,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to submit attempt" });
+  }
+});
+
+router.get("/stats/:groupId", authMiddleware, async (req, res) => {
+  try {
+    const group = await isGroupMember(req.params.groupId, req.user._id);
+
+    if (!group) {
+      return res
+        .status(403)
+        .json({ message: "Only group members can view stats" });
+    }
+
+    const totalAttempts = await QuestionAttempt.countDocuments({
+      group: req.params.groupId,
+      user: req.user._id,
+    });
+
+    const correctAttempts = await QuestionAttempt.countDocuments({
+      group: req.params.groupId,
+      user: req.user._id,
+      isCorrect: true,
+    });
+
+    res.json({
+      totalAttempts,
+      correctAttempts,
+      wrongAttempts: totalAttempts - correctAttempts,
+      scorePercentage:
+        totalAttempts > 0
+          ? Math.round((correctAttempts / totalAttempts) * 100)
+          : 0,
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to fetch stats" });
   }
 });
 

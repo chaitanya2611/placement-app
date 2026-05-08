@@ -9,6 +9,7 @@ import cloudinary from "../utils/cloudinary.js";
 const router = express.Router();
 
 const storage = multer.memoryStorage();
+const allowedReactions = ["👍", "❤️", "😂", "🔥", "👏", "😮"];
 
 const upload = multer({
   storage,
@@ -61,6 +62,12 @@ const checkGroupMember = async (groupId, userId) => {
   return { group };
 };
 
+const getPopulatedMessage = (messageId) => {
+  return Message.findById(messageId)
+    .populate("sender", "name email")
+    .populate("reactions.user", "name email");
+};
+
 router.get("/:groupId", authMiddleware, async (req, res) => {
   try {
     const result = await checkGroupMember(req.params.groupId, req.user._id);
@@ -71,6 +78,7 @@ router.get("/:groupId", authMiddleware, async (req, res) => {
 
     const messages = await Message.find({ group: req.params.groupId })
       .populate("sender", "name email")
+      .populate("reactions.user", "name email")
       .sort({ createdAt: 1 });
 
     res.json(messages);
@@ -119,10 +127,7 @@ router.post(
               : "text",
       });
 
-      const populatedMessage = await Message.findById(message._id).populate(
-        "sender",
-        "name email",
-      );
+      const populatedMessage = await getPopulatedMessage(message._id);
 
       req.app
         .get("io")
@@ -135,5 +140,131 @@ router.post(
     }
   },
 );
+
+router.put("/:messageId", authMiddleware, async (req, res) => {
+  try {
+    const { text } = req.body;
+
+    if (!text?.trim()) {
+      return res.status(400).json({ message: "Message text is required" });
+    }
+
+    const message = await Message.findById(req.params.messageId);
+
+    if (!message) {
+      return res.status(404).json({ message: "Message not found" });
+    }
+
+    const result = await checkGroupMember(message.group, req.user._id);
+
+    if (result.error) {
+      return res.status(result.status).json({ message: result.error });
+    }
+
+    if (message.sender.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "You can edit only your messages" });
+    }
+
+    message.text = text.trim();
+    message.isEdited = true;
+    message.editedAt = new Date();
+    await message.save();
+
+    const populatedMessage = await getPopulatedMessage(message._id);
+
+    req.app
+      .get("io")
+      .to(message.group.toString())
+      .emit("messageUpdated", populatedMessage);
+
+    res.json(populatedMessage);
+  } catch (error) {
+    res.status(500).json({ message: "Failed to update message" });
+  }
+});
+
+router.delete("/:messageId", authMiddleware, async (req, res) => {
+  try {
+    const message = await Message.findById(req.params.messageId);
+
+    if (!message) {
+      return res.status(404).json({ message: "Message not found" });
+    }
+
+    const result = await checkGroupMember(message.group, req.user._id);
+
+    if (result.error) {
+      return res.status(result.status).json({ message: result.error });
+    }
+
+    if (message.sender.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "You can delete only your messages" });
+    }
+
+    if (message.imagePublicId) {
+      await cloudinary.uploader.destroy(message.imagePublicId);
+    }
+
+    await Message.findByIdAndDelete(message._id);
+
+    req.app
+      .get("io")
+      .to(message.group.toString())
+      .emit("messageDeleted", { messageId: message._id });
+
+    res.json({ message: "Message deleted successfully", messageId: message._id });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to delete message" });
+  }
+});
+
+router.post("/:messageId/reactions", authMiddleware, async (req, res) => {
+  try {
+    const { emoji } = req.body;
+
+    if (!allowedReactions.includes(emoji)) {
+      return res.status(400).json({ message: "Invalid reaction" });
+    }
+
+    const message = await Message.findById(req.params.messageId);
+
+    if (!message) {
+      return res.status(404).json({ message: "Message not found" });
+    }
+
+    const result = await checkGroupMember(message.group, req.user._id);
+
+    if (result.error) {
+      return res.status(result.status).json({ message: result.error });
+    }
+
+    const existingReactionIndex = message.reactions.findIndex(
+      (reaction) => reaction.user.toString() === req.user._id.toString(),
+    );
+
+    if (existingReactionIndex >= 0) {
+      if (message.reactions[existingReactionIndex].emoji === emoji) {
+        message.reactions.splice(existingReactionIndex, 1);
+      } else {
+        message.reactions[existingReactionIndex].emoji = emoji;
+      }
+    } else {
+      message.reactions.push({ user: req.user._id, emoji });
+    }
+
+    await message.save();
+
+    const populatedMessage = await getPopulatedMessage(message._id);
+
+    req.app
+      .get("io")
+      .to(message.group.toString())
+      .emit("messageUpdated", populatedMessage);
+
+    res.json(populatedMessage);
+  } catch (error) {
+    res.status(500).json({ message: "Failed to react to message" });
+  }
+});
 
 export default router;

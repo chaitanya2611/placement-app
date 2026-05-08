@@ -36,6 +36,8 @@ router.get("/my-groups", authMiddleware, async (req, res) => {
       members: req.user._id,
     })
       .populate("creator", "name email")
+      .populate("members", "name email")
+      .populate("joinRequests.user", "name email")
       .sort({ createdAt: -1 });
 
     res.json(groups);
@@ -163,7 +165,11 @@ router.put(
 
       request.status = "accepted";
 
-      if (!group.members.includes(req.params.userId)) {
+      const alreadyMember = group.members.some(
+        (memberId) => memberId.toString() === req.params.userId,
+      );
+
+      if (!alreadyMember) {
         group.members.push(req.params.userId);
       }
 

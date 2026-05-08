@@ -1,6 +1,7 @@
 import express from "express";
 import multer from "multer";
 import streamifier from "streamifier";
+import mongoose from "mongoose";
 import Question from "../models/Question.js";
 import QuestionAttempt from "../models/QuestionAttempt.js";
 import Group from "../models/Group.js";
@@ -55,6 +56,95 @@ const isGroupMember = async (groupId, userId) => {
 
   return member ? group : null;
 };
+
+router.get("/leaderboard/:groupId", authMiddleware, async (req, res) => {
+  try {
+    const group = await isGroupMember(req.params.groupId, req.user._id);
+
+    if (!group) {
+      return res
+        .status(403)
+        .json({ message: "Only group members can view leaderboard" });
+    }
+
+    const leaderboard = await QuestionAttempt.aggregate([
+      {
+        $match: {
+          group: new mongoose.Types.ObjectId(req.params.groupId),
+        },
+      },
+      {
+        $group: {
+          _id: "$user",
+          totalAttempts: { $sum: 1 },
+          correctAttempts: {
+            $sum: {
+              $cond: ["$isCorrect", 1, 0],
+            },
+          },
+        },
+      },
+      {
+        $addFields: {
+          wrongAttempts: {
+            $subtract: ["$totalAttempts", "$correctAttempts"],
+          },
+          scorePercentage: {
+            $round: [
+              {
+                $multiply: [
+                  {
+                    $divide: ["$correctAttempts", "$totalAttempts"],
+                  },
+                  100,
+                ],
+              },
+              0,
+            ],
+          },
+        },
+      },
+      {
+        $lookup: {
+          from: "users",
+          localField: "_id",
+          foreignField: "_id",
+          as: "user",
+        },
+      },
+      { $unwind: "$user" },
+      {
+        $project: {
+          _id: 0,
+          userId: "$user._id",
+          name: "$user.name",
+          email: "$user.email",
+          totalAttempts: 1,
+          correctAttempts: 1,
+          wrongAttempts: 1,
+          scorePercentage: 1,
+        },
+      },
+      {
+        $sort: {
+          scorePercentage: -1,
+          correctAttempts: -1,
+          totalAttempts: -1,
+          name: 1,
+        },
+      },
+    ]);
+
+    res.json(
+      leaderboard.map((item, index) => ({
+        rank: index + 1,
+        ...item,
+      })),
+    );
+  } catch (error) {
+    res.status(500).json({ message: "Failed to fetch leaderboard" });
+  }
+});
 
 router.post(
   "/:groupId",

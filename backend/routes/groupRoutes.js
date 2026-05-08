@@ -123,6 +123,102 @@ router.get("/all", authMiddleware, async (req, res) => {
   }
 });
 
+/* UPDATE GROUP DETAILS - CREATOR ONLY */
+router.put("/:groupId", authMiddleware, async (req, res) => {
+  try {
+    const { title, description } = req.body;
+    const group = await Group.findById(req.params.groupId);
+
+    if (!group) {
+      return res.status(404).json({ message: "Group not found" });
+    }
+
+    if (group.creator.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "Only creator can edit group details" });
+    }
+
+    if (!title?.trim()) {
+      return res.status(400).json({ message: "Group title is required" });
+    }
+
+    group.title = title.trim();
+    group.description = description || "";
+
+    await group.save();
+
+    const updatedGroup = await Group.findById(group._id)
+      .populate("creator", "name email")
+      .populate("members", "name email")
+      .populate("joinRequests.user", "name email");
+
+    res.json({ message: "Group updated successfully", group: updatedGroup });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to update group" });
+  }
+});
+
+/* REMOVE MEMBER - CREATOR ONLY */
+router.put("/:groupId/members/:userId/remove", authMiddleware, async (req, res) => {
+  try {
+    const group = await Group.findById(req.params.groupId);
+
+    if (!group) {
+      return res.status(404).json({ message: "Group not found" });
+    }
+
+    if (group.creator.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "Only creator can remove members" });
+    }
+
+    if (req.params.userId === group.creator.toString()) {
+      return res.status(400).json({ message: "Creator cannot be removed from the group" });
+    }
+
+    group.members = group.members.filter(
+      (memberId) => memberId.toString() !== req.params.userId,
+    );
+
+    await group.save();
+
+    res.json({ message: "Member removed successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to remove member" });
+  }
+});
+
+/* LEAVE GROUP - MEMBERS ONLY */
+router.put("/:groupId/leave", authMiddleware, async (req, res) => {
+  try {
+    const group = await Group.findById(req.params.groupId);
+
+    if (!group) {
+      return res.status(404).json({ message: "Group not found" });
+    }
+
+    if (group.creator.toString() === req.user._id.toString()) {
+      return res.status(400).json({ message: "Creator cannot leave their own group" });
+    }
+
+    const isMember = group.members.some(
+      (memberId) => memberId.toString() === req.user._id.toString(),
+    );
+
+    if (!isMember) {
+      return res.status(400).json({ message: "You are not a member of this group" });
+    }
+
+    group.members = group.members.filter(
+      (memberId) => memberId.toString() !== req.user._id.toString(),
+    );
+
+    await group.save();
+
+    res.json({ message: "You left the group successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to leave group" });
+  }
+});
+
 /* SEND JOIN REQUEST */
 router.post("/:groupId/request", authMiddleware, async (req, res) => {
   try {

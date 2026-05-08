@@ -6,6 +6,9 @@ import authMiddleware from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
+const PISTON_API_URL = process.env.PISTON_API_URL || "https://emkc.org/api/v2/piston/execute";
+const PYTHON_VERSION = process.env.PISTON_PYTHON_VERSION || "3.10.0";
+
 const isGroupMember = async (groupId, userId) => {
   const group = await Group.findById(groupId);
   if (!group) return null;
@@ -23,6 +26,97 @@ const ensureCodingEnabled = (group) => {
 
 const normalizeOutput = (value = "") => {
   return String(value).replace(/\r\n/g, "\n").trim();
+};
+
+const runPythonWithPiston = async (code, stdin = "") => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+
+  try {
+    const response = await fetch(PISTON_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        language: "python",
+        version: PYTHON_VERSION,
+        files: [
+          {
+            name: "main.py",
+            content: code,
+          },
+        ],
+        stdin,
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text || "Piston execution failed");
+    }
+
+    const data = await response.json();
+    const run = data.run || {};
+
+    return {
+      stdout: run.stdout || "",
+      stderr: run.stderr || "",
+      output: run.output || `${run.stdout || ""}${run.stderr || ""}`,
+      code: typeof run.code === "number" ? run.code : 0,
+      signal: run.signal || null,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const evaluateCodeAgainstTests = async (code, testCases) => {
+  const results = [];
+  let passedTests = 0;
+  let hasRuntimeError = false;
+
+  for (let index = 0; index < testCases.length; index += 1) {
+    const testCase = testCases[index];
+    const execution = await runPythonWithPiston(code, testCase.input || "");
+    const receivedOutput = execution.stdout || "";
+    const expectedOutput = testCase.expectedOutput || "";
+    const passed =
+      execution.code === 0 &&
+      normalizeOutput(receivedOutput) === normalizeOutput(expectedOutput);
+
+    if (passed) passedTests += 1;
+    if (execution.code !== 0 || execution.stderr) hasRuntimeError = true;
+
+    results.push({
+      testNumber: index + 1,
+      hidden: Boolean(testCase.isHidden),
+      passed,
+      input: testCase.isHidden ? "" : testCase.input || "",
+      expectedOutput: testCase.isHidden ? "Hidden" : expectedOutput,
+      receivedOutput: testCase.isHidden ? "Hidden" : receivedOutput,
+      stderr: testCase.isHidden ? "" : execution.stderr || "",
+      exitCode: execution.code,
+    });
+  }
+
+  const totalTests = testCases.length;
+  const status = hasRuntimeError
+    ? "Error"
+    : passedTests === totalTests
+      ? "Accepted"
+      : "Wrong Answer";
+
+  return {
+    passedTests,
+    totalTests,
+    status,
+    results,
+    output: results
+      .map((result) => `Test ${result.testNumber}: ${result.passed ? "Passed" : "Failed"}${result.hidden ? " (hidden)" : ""}`)
+      .join("\n"),
+  };
 };
 
 router.post("/:groupId/problems", authMiddleware, async (req, res) => {
@@ -171,21 +265,26 @@ router.post("/problems/:problemId/run", authMiddleware, async (req, res) => {
       return res.status(403).json({ message: "Coding interface is not enabled for this group" });
     }
 
-    const { code, output } = req.body;
+    const { code } = req.body;
+
+    if (!code?.trim()) {
+      return res.status(400).json({ message: "Code is required" });
+    }
+
     const visibleTests = problem.testCases.filter((testCase) => !testCase.isHidden);
-    const firstTest = visibleTests[0] || problem.testCases[0];
+    const testsToRun = visibleTests.length ? visibleTests : problem.testCases.slice(0, 1);
+    const evaluation = await evaluateCodeAgainstTests(code, testsToRun);
 
     res.json({
-      message: "Python execution provider is not connected yet. Frontend can preview code, and submissions will compare provided output for the first visible test case.",
+      message: evaluation.status,
       language: "python",
-      code,
-      input: firstTest?.input || "",
-      expectedOutput: firstTest?.expectedOutput || "",
-      receivedOutput: output || "",
-      isCorrect: normalizeOutput(output) === normalizeOutput(firstTest?.expectedOutput || ""),
+      passedTests: evaluation.passedTests,
+      totalTests: evaluation.totalTests,
+      status: evaluation.status,
+      results: evaluation.results,
     });
   } catch (error) {
-    res.status(500).json({ message: "Failed to run code" });
+    res.status(500).json({ message: error.message || "Failed to run Python code" });
   }
 });
 
@@ -207,27 +306,13 @@ router.post("/problems/:problemId/submit", authMiddleware, async (req, res) => {
       return res.status(403).json({ message: "Coding interface is not enabled for this group" });
     }
 
-    const { code, outputs = [] } = req.body;
+    const { code } = req.body;
 
     if (!code?.trim()) {
       return res.status(400).json({ message: "Code is required" });
     }
 
-    let passedTests = 0;
-    const resultLines = [];
-
-    problem.testCases.forEach((testCase, index) => {
-      const received = outputs[index] || "";
-      const passed = normalizeOutput(received) === normalizeOutput(testCase.expectedOutput);
-      if (passed) passedTests += 1;
-
-      resultLines.push(
-        `Test ${index + 1}: ${passed ? "Passed" : "Failed"}${testCase.isHidden ? " (hidden)" : ""}`,
-      );
-    });
-
-    const totalTests = problem.testCases.length;
-    const status = passedTests === totalTests ? "Accepted" : "Wrong Answer";
+    const evaluation = await evaluateCodeAgainstTests(code, problem.testCases);
 
     const submission = await CodeSubmission.create({
       problem: problem._id,
@@ -235,18 +320,19 @@ router.post("/problems/:problemId/submit", authMiddleware, async (req, res) => {
       user: req.user._id,
       language: "python",
       code,
-      status,
-      passedTests,
-      totalTests,
-      output: resultLines.join("\n"),
+      status: evaluation.status,
+      passedTests: evaluation.passedTests,
+      totalTests: evaluation.totalTests,
+      output: evaluation.output,
     });
 
     res.status(201).json({
-      message: status,
+      message: evaluation.status,
       submission,
+      results: evaluation.results,
     });
   } catch (error) {
-    res.status(500).json({ message: "Failed to submit code" });
+    res.status(500).json({ message: error.message || "Failed to submit Python code" });
   }
 });
 

@@ -126,7 +126,7 @@ router.get("/all", authMiddleware, async (req, res) => {
 /* UPDATE GROUP DETAILS - CREATOR ONLY */
 router.put("/:groupId", authMiddleware, async (req, res) => {
   try {
-    const { title, description } = req.body;
+    const { title, description, codingEnabled } = req.body;
     const group = await Group.findById(req.params.groupId);
 
     if (!group) {
@@ -143,6 +143,10 @@ router.put("/:groupId", authMiddleware, async (req, res) => {
 
     group.title = title.trim();
     group.description = description || "";
+
+    if (typeof codingEnabled === "boolean") {
+      group.codingEnabled = codingEnabled;
+    }
 
     await group.save();
 

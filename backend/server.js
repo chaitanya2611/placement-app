@@ -9,6 +9,7 @@ import jwt from "jsonwebtoken";
 import authRoutes from "./routes/authRoutes.js";
 import groupRoutes from "./routes/groupRoutes.js";
 import messageRoutes from "./routes/messageRoutes.js";
+import questionRoutes from "./routes/questionRoutes.js";
 
 import User from "./models/User.js";
 import Group from "./models/Group.js";
@@ -49,6 +50,7 @@ app.use(express.json());
 app.use("/api/auth", authRoutes);
 app.use("/api/groups", groupRoutes);
 app.use("/api/messages", messageRoutes);
+app.use("/api/questions", questionRoutes);
 app.use("/api/upload", uploadRoutes);
 
 io.use(async (socket, next) => {
@@ -110,10 +112,9 @@ io.on("connection", (socket) => {
       attachment: attachment || null,
     });
 
-    const populatedMessage = await Message.findById(message._id).populate(
-      "sender",
-      "name email",
-    );
+    const populatedMessage = await Message.findById(message._id)
+      .populate("sender", "name email")
+      .populate("reactions.user", "name email");
 
     io.to(groupId).emit("receiveMessage", populatedMessage);
   });

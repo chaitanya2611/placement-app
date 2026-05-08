@@ -112,4 +112,38 @@ router.put("/:meetingId/end", authMiddleware, async (req, res) => {
   }
 });
 
+router.delete("/:meetingId", authMiddleware, async (req, res) => {
+  try {
+    const meeting = await Meeting.findById(req.params.meetingId);
+
+    if (!meeting) {
+      return res.status(404).json({ message: "Meeting not found" });
+    }
+
+    const group = await Group.findById(meeting.group);
+
+    if (!group) {
+      return res.status(404).json({ message: "Group not found" });
+    }
+
+    const isMember = group.members.some(
+      (memberId) => memberId.toString() === req.user._id.toString(),
+    );
+
+    if (!isMember) {
+      return res.status(403).json({ message: "Only group members can delete meetings" });
+    }
+
+    if (group.creator.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "Only group creator can delete meeting details" });
+    }
+
+    await Meeting.findByIdAndDelete(meeting._id);
+
+    res.json({ message: "Meeting deleted successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to delete meeting" });
+  }
+});
+
 export default router;

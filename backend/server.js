@@ -44,7 +44,6 @@ const io = new Server(server, {
 app.set("io", io);
 
 app.use(cors(corsOptions));
-app.options("*", cors(corsOptions));
 app.use(express.json());
 
 app.use("/api/auth", authRoutes);

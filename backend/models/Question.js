@@ -14,6 +14,12 @@ const questionSchema = new mongoose.Schema(
       required: true,
     },
 
+    topic: {
+      type: String,
+      default: "General",
+      trim: true,
+    },
+
     questionText: {
       type: String,
       required: true,

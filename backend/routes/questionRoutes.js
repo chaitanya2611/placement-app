@@ -180,6 +180,84 @@ router.get("/topics/:groupId", authMiddleware, async (req, res) => {
   }
 });
 
+router.put("/single/:questionId", authMiddleware, async (req, res) => {
+  try {
+    const question = await Question.findById(req.params.questionId);
+
+    if (!question) {
+      return res.status(404).json({ message: "Question not found" });
+    }
+
+    const group = await isGroupMember(question.group, req.user._id);
+
+    if (!group) {
+      return res.status(403).json({ message: "Only group members can edit MCQs" });
+    }
+
+    if (question.createdBy.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "You can edit only your own MCQs" });
+    }
+
+    const { topic, questionText, options, correctOption, explanation } = req.body;
+
+    let parsedOptions = options;
+    if (typeof parsedOptions === "string") {
+      parsedOptions = JSON.parse(parsedOptions);
+    }
+
+    if (!questionText || !parsedOptions || parsedOptions.length !== 4) {
+      return res.status(400).json({ message: "Question and 4 options are required" });
+    }
+
+    question.topic = topic?.trim() || "General";
+    question.questionText = questionText;
+    question.options = parsedOptions;
+    question.correctOption = Number(correctOption);
+    question.explanation = explanation || "";
+
+    await question.save();
+
+    await QuestionAttempt.deleteMany({ question: question._id });
+
+    const updatedQuestion = await Question.findById(question._id).populate("createdBy", "name email");
+
+    res.json({ message: "MCQ updated successfully", question: updatedQuestion });
+  } catch (error) {
+    res.status(500).json({ message: error.message || "Failed to update MCQ" });
+  }
+});
+
+router.delete("/single/:questionId", authMiddleware, async (req, res) => {
+  try {
+    const question = await Question.findById(req.params.questionId);
+
+    if (!question) {
+      return res.status(404).json({ message: "Question not found" });
+    }
+
+    const group = await isGroupMember(question.group, req.user._id);
+
+    if (!group) {
+      return res.status(403).json({ message: "Only group members can delete MCQs" });
+    }
+
+    if (question.createdBy.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: "You can delete only your own MCQs" });
+    }
+
+    if (question.questionImagePublicId) {
+      await cloudinary.uploader.destroy(question.questionImagePublicId);
+    }
+
+    await QuestionAttempt.deleteMany({ question: question._id });
+    await Question.findByIdAndDelete(question._id);
+
+    res.json({ message: "MCQ deleted successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to delete MCQ" });
+  }
+});
+
 router.post("/attempt/:questionId", authMiddleware, async (req, res) => {
   try {
     const { selectedOption } = req.body;

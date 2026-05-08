@@ -23,6 +23,21 @@ const createRoomName = (groupId) => {
   return `prep-to-place-${groupId}-${randomCode}`;
 };
 
+const sanitizeEndedMeetingLinks = (meetings) => {
+  return meetings.map((meetingDoc) => {
+    const meeting = meetingDoc.toObject ? meetingDoc.toObject() : meetingDoc;
+
+    if (meeting.status === "ended") {
+      return {
+        ...meeting,
+        meetingUrl: "",
+      };
+    }
+
+    return meeting;
+  });
+};
+
 router.get("/:groupId", authMiddleware, async (req, res) => {
   try {
     const group = await isGroupMember(req.params.groupId, req.user._id);
@@ -35,7 +50,7 @@ router.get("/:groupId", authMiddleware, async (req, res) => {
       .populate("createdBy", "name email")
       .sort({ createdAt: -1 });
 
-    res.json(meetings);
+    res.json(sanitizeEndedMeetingLinks(meetings));
   } catch (error) {
     res.status(500).json({ message: "Failed to fetch meetings" });
   }
@@ -104,9 +119,16 @@ router.put("/:meetingId/end", authMiddleware, async (req, res) => {
     }
 
     meeting.status = "ended";
+    meeting.meetingUrl = "";
     await meeting.save();
 
-    res.json({ message: "Meeting marked as ended", meeting });
+    res.json({
+      message: "Meeting marked as ended",
+      meeting: {
+        ...meeting.toObject(),
+        meetingUrl: "",
+      },
+    });
   } catch (error) {
     res.status(500).json({ message: "Failed to end meeting" });
   }

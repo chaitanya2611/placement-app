@@ -72,6 +72,27 @@ app.use("/api/meetings", meetingRoutes);
 app.use("/api/coding", codingRoutes);
 app.use("/api/upload", uploadRoutes);
 
+const startKeepAlive = () => {
+  const backendUrl = process.env.BACKEND_URL || process.env.RENDER_EXTERNAL_URL;
+  const keepAliveEnabled = process.env.KEEP_ALIVE_ENABLED === "true";
+
+  if (!keepAliveEnabled || !backendUrl) {
+    console.log("Keep-alive cron disabled. Set KEEP_ALIVE_ENABLED=true and BACKEND_URL to enable it.");
+    return;
+  }
+
+  const healthUrl = `${backendUrl.replace(/\/$/, "")}/api/health`;
+
+  setInterval(async () => {
+    try {
+      const response = await fetch(healthUrl);
+      console.log(`Keep-alive ping: ${response.status} ${healthUrl}`);
+    } catch (error) {
+      console.log("Keep-alive ping failed:", error.message);
+    }
+  }, 5 * 60 * 1000);
+};
+
 io.use(async (socket, next) => {
   try {
     const token = socket.handshake.auth.token;
@@ -155,6 +176,7 @@ mongoose
   .then(() => {
     server.listen(process.env.PORT, () => {
       console.log(`Server running on port ${process.env.PORT}`);
+      startKeepAlive();
     });
   })
   .catch((error) => console.log(error));

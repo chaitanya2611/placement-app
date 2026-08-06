@@ -223,7 +223,7 @@ router.put("/:groupId/leave", authMiddleware, async (req, res) => {
   }
 });
 
-/* SEND JOIN REQUEST */
+/* JOIN GROUP IMMEDIATELY */
 router.post("/:groupId/request", authMiddleware, async (req, res) => {
   try {
     const group = await Group.findById(req.params.groupId);
@@ -246,24 +246,14 @@ router.post("/:groupId/request", authMiddleware, async (req, res) => {
       return res.status(400).json({ message: "You are already a member" });
     }
 
-    const alreadyRequested = group.joinRequests.some(
-      (request) =>
-        request.user.toString() === req.user._id.toString() &&
-        request.status === "pending",
+    group.members.push(req.user._id);
+    group.joinRequests = group.joinRequests.filter(
+      (request) => request.user.toString() !== req.user._id.toString(),
     );
-
-    if (alreadyRequested) {
-      return res.status(400).json({ message: "Join request already sent" });
-    }
-
-    group.joinRequests.push({
-      user: req.user._id,
-      status: "pending",
-    });
 
     await group.save();
 
-    res.json({ message: "Join request sent successfully" });
+    res.json({ message: "You joined the group successfully", groupId: group._id });
   } catch (error) {
     res.status(500).json({ message: "Server error" });
   }

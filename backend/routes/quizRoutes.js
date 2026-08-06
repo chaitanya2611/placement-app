@@ -7,6 +7,89 @@ import authMiddleware from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
+const getCreatorGroup = async (groupId, userId) => {
+  const group = await Group.findById(groupId)
+    .populate("creator", "name email")
+    .populate("members", "name email");
+
+  if (!group) return { error: "Group not found", status: 404 };
+
+  const creatorId = group.creator?._id || group.creator;
+  if (creatorId.toString() !== userId.toString()) {
+    return { error: "Only the group creator can view quiz reports", status: 403 };
+  }
+
+  return { group };
+};
+
+const buildQuizReports = async (group) => {
+  const [quizzes, attempts] = await Promise.all([
+    Quiz.find({ group: group._id }).populate("createdBy", "name email").sort({ createdAt: -1 }),
+    QuizAttempt.find({ group: group._id }).populate("user", "name email").sort({ submittedAt: 1 }),
+  ]);
+
+  const members = group.members || [];
+
+  return quizzes.map((quiz) => {
+    const quizAttempts = attempts.filter(
+      (attempt) => attempt.quiz.toString() === quiz._id.toString(),
+    );
+    const attemptsByUser = new Map(
+      quizAttempts.map((attempt) => [attempt.user?._id?.toString(), attempt]),
+    );
+    const results = members.map((member) => {
+      const attempt = attemptsByUser.get(member._id.toString());
+      return {
+        user: { id: member._id, name: member.name, email: member.email },
+        attended: Boolean(attempt),
+        score: attempt?.score ?? null,
+        totalMarks: attempt?.totalMarks ?? null,
+        percentage: attempt?.percentage ?? null,
+        correctCount: attempt?.correctCount ?? null,
+        wrongCount: attempt?.wrongCount ?? null,
+        unattemptedCount: attempt?.unattemptedCount ?? null,
+        submittedAt: attempt?.submittedAt ?? null,
+      };
+    });
+    const attended = results.filter((result) => result.attended);
+
+    return {
+      quiz: {
+        id: quiz._id,
+        title: quiz.title,
+        createdBy: quiz.createdBy,
+        createdAt: quiz.createdAt,
+        totalMarks: quiz.questions.reduce(
+          (sum, question) => sum + Number(question.marks || 0),
+          0,
+        ),
+      },
+      summary: {
+        totalMembers: members.length,
+        attendedCount: attended.length,
+        absentCount: members.length - attended.length,
+        attendancePercentage: members.length
+          ? Math.round((attended.length / members.length) * 100)
+          : 0,
+        averagePercentage: attended.length
+          ? Math.round(
+              attended.reduce((sum, result) => sum + result.percentage, 0) /
+                attended.length,
+            )
+          : 0,
+      },
+      results,
+    };
+  });
+};
+
+const escapeCsvCell = (value) => {
+  if (value === null || value === undefined) return "";
+  let text = String(value);
+  if (/^[=+\-@]/.test(text)) text = `'${text}`;
+  return `"${text.replace(/"/g, '""')}"`;
+};
+
 const isGroupMember = async (groupId, userId) => {
   const group = await Group.findById(groupId);
   if (!group) return null;
@@ -114,6 +197,77 @@ router.get("/:groupId", authMiddleware, async (req, res) => {
     );
   } catch (error) {
     res.status(500).json({ message: "Failed to fetch quizzes" });
+  }
+});
+
+router.get("/:groupId/reports", authMiddleware, async (req, res) => {
+  try {
+    const lookup = await getCreatorGroup(req.params.groupId, req.user._id);
+    if (lookup.error) {
+      return res.status(lookup.status).json({ message: lookup.error });
+    }
+
+    const reports = await buildQuizReports(lookup.group);
+    res.json({
+      group: { id: lookup.group._id, title: lookup.group.title },
+      generatedAt: new Date().toISOString(),
+      reports,
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to generate quiz reports" });
+  }
+});
+
+router.get("/:groupId/reports.csv", authMiddleware, async (req, res) => {
+  try {
+    const lookup = await getCreatorGroup(req.params.groupId, req.user._id);
+    if (lookup.error) {
+      return res.status(lookup.status).json({ message: lookup.error });
+    }
+
+    const reports = await buildQuizReports(lookup.group);
+    const rows = [
+      [
+        "Quiz",
+        "Student",
+        "Email",
+        "Attendance",
+        "Score",
+        "Total Marks",
+        "Percentage",
+        "Correct",
+        "Wrong",
+        "Unattempted",
+        "Submitted At",
+      ],
+    ];
+
+    reports.forEach((report) => {
+      report.results.forEach((result) => {
+        rows.push([
+          report.quiz.title,
+          result.user.name,
+          result.user.email,
+          result.attended ? "Attended" : "Absent",
+          result.score,
+          result.totalMarks,
+          result.percentage,
+          result.correctCount,
+          result.wrongCount,
+          result.unattemptedCount,
+          result.submittedAt ? new Date(result.submittedAt).toISOString() : "",
+        ]);
+      });
+    });
+
+    const csv = rows.map((row) => row.map(escapeCsvCell).join(",")).join("\n");
+    const filename = `${lookup.group.title.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase() || "group"}-quiz-reports.csv`;
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(`\uFEFF${csv}`);
+  } catch (error) {
+    res.status(500).json({ message: "Failed to download quiz reports" });
   }
 });
 

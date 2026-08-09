@@ -1,4 +1,4 @@
-name: Keep production backend awake
+name: Keep BSBE production API awake
 
 on:
   schedule:
@@ -10,8 +10,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Ping backend health endpoint
+      - name: Ping BSBE API
         run: |
-          curl --fail --silent --show-error \
-            --retry 3 --retry-delay 10 --max-time 90 \
-            https://prep-to-place.onrender.com/api/health
+          curl --silent --show-error --location             --retry 3 --retry-all-errors --retry-delay 10 --max-time 90             --output /dev/null             https://bsbe-placement-api.onrender.com/
